@@ -1,264 +1,149 @@
-# ESP32 USB-C Serial Console Server - Minimal Version
+# ESP32 USB-C Serial Console Server
 
-A minimal, working serial console server for ESP32-S2/S3 with native USB-C support.
+Complete firmware for ESP32-S2/S3 to create a USB-C serial console server with web interface.
 
-## What This Version Does
+## Features
 
+- ✅ **WiFi Modes**: AP, STA, or AP+STA (dual mode)
+- ✅ **Web Interface**: Modern responsive UI with terminal
+- ✅ **Authentication**: Password-protected access
+- ✅ **Static/DHCP IP**: Configure network settings
+- ✅ **Configuration Storage**: Settings saved to LittleFS
+- ✅ **Network Scanning**: Find WiFi networks
+- ✅ **Factory Reset**: Restore defaults
+
+## Hardware
+
+### Supported Boards
+| Board | USB-C | Notes |
+|-------|-------|-------|
+| ESP32-S2 | ✅ Native | Recommended |
+| ESP32-S3 | ✅ Native | More GPIO pins |
+| ESP32 | ❌ External | Needs USB-Serial adapter |
+
+### Wiring
 ```
-┌─────────────────┐         USB-C          ┌─────────────────┐
-│   Aruba CX      │◄──────────────────────►│     ESP32       │
-│   Switch        │        Serial           │    S2/S3        │
-└─────────────────┘                         └────────┬────────┘
-                                                      │
-                                                      │ WiFi
-                                                      ▼
-                                            ┌─────────────────┐
-                                            │  Web Browser    │
-                                            │  (Cellphone/PC) │
-                                            └─────────────────┘
+ESP32-S2/S3 USB-C ──► Device Console Port
+                      (D+, D-, GND)
 ```
-
-1. **Creates WiFi hotspot** - Device broadcasts `SerialConsole-XXXXXX`
-2. **Serves web page** - Connect and access serial console from browser
-3. **USB-C serial bridge** - Bidirectional data between equipment and browser
 
 ## Quick Start
 
-### 1. Install PlatformIO
-
+### 1. Build & Flash
 ```bash
-pip install platformio
-```
-
-### 2. Build and Upload (ESP32-S2)
-
-```bash
-# Build
-pio run -e esp32-s2
-
-# Upload (connect ESP32-S2 via USB)
+cd USBSerial-ESP32
 pio run -e esp32-s2 -t upload
-
-# Monitor serial output
 pio device monitor
 ```
 
-### 3. Connect
+### 2. Connect
+- Connect to WiFi: `SerialConsole-XXXXXX`
+- Password: `serial123`
+- Open: `http://192.168.4.1`
+- Login: `admin` / `admin`
 
-1. Power on ESP32-S2
-2. On phone/laptop, connect to WiFi:
-   - **SSID**: `SerialConsole-XXXXXX` (last 6 of MAC address)
-   - **Password**: `serial123`
-3. Open browser: `http://192.168.4.1`
-4. Click **Connect**
-5. Wire USB-C from ESP32-S2 to your Aruba CX console port
+### 3. Use
+- Select WiFi mode (AP/STA/Dual)
+- Configure network settings
+- Connect USB-C to device console
+- Open Terminal tab and interact
 
-## Hardware Requirements
+## Testing Without Hardware
 
-### ESP32-S2 (Recommended)
-- Native USB-C support
-- Works as USB device (connects to switch console)
-- No extra hardware needed
-
-### ESP32-S3 (Alternative)
-- Same as S2, more GPIO pins available
-
-### ESP32 (Original)
-- **NOT recommended** - no native USB-C
-- Would need external USB-to-Serial chip
-
-## Wiring
-
-### USB-C to Serial Console Port
-
-```
-USB-C Cable         Aruba CX Console Port
-─────────          ┌──────────────────────┐
-  D+    ──────────►│ D+ (Pin 2)            │
-  D-    ──────────►│ D- (Pin 3)            │
-  GND   ──────────►│ GND (Pin 1)           │
-─────────          └──────────────────────┘
-```
-
-The ESP32-S2/S3 appears as a USB-CDC device to the switch, just like a standard USB-Serial adapter.
-
-## Status LED
-
-- **3 quick blinks** = Startup complete
-- **Slow blink** = Running normally
-- **Fast blink** = Error (check serial monitor)
-
-## Troubleshooting
-
-### Can't find WiFi network
-
+Run the simulator:
 ```bash
-# Check serial monitor for:
-AP Started:
-  SSID: SerialConsole-XXXXXX
-  IP: 192.168.4.1
+cd test
+npm install
+node simulator.js 3000 3001
 ```
 
-- Ensure 2.4GHz (not 5GHz)
-- Allow 20-30 seconds for AP to start
+Open `http://localhost:3000` (or your network IP from other devices)
 
-### Web page doesn't load
+## Configuration
 
-- Verify IP: `192.168.4.1`
-- Clear browser cache
-- Check you're connected to the ESP32's WiFi
+### WiFi Modes
 
-### WebSocket disconnects immediately
+| Mode | Description |
+|------|-------------|
+| **AP** | Creates hotspot for devices to connect |
+| **STA** | Connects to existing WiFi network |
+| **Dual** | Both AP and STA simultaneously |
 
-- Browser may block WebSocket
-- Try different browser
-- Check console for errors (F12)
+### Static IP
+1. Go to Network tab
+2. Enable "Use Static IP"
+3. Enter IP, Gateway, Subnet, DNS
+4. Save & Restart
 
-### No serial data
+### Authentication
+1. Go to Settings (⚙️)
+2. Enable/disable authentication
+3. Change username/password
+4. Factory reset available
 
-1. **Check baud rate**: Default is 9600 (Aruba CX default)
-2. **Check USB-C cable**: Must be data cable
-3. **Check connection**: USB-C to console port
-4. **Verify USB-CDC mode**: Serial monitor shows "Connected"
+## Project Structure
 
-### Upload fails
-
-**ESP32-S2/S3 needs manual boot mode:**
-1. Hold **BOOT** button
-2. Press and release **RESET** button
-3. Release **BOOT** button
-4. Upload starts
-
-## Testing Without Switch
-
-### Loopback Test
-
-Connect USB-C to your COMPUTER (not switch):
-1. Open Arduino IDE Serial Monitor on that port
-2. Type characters
-3. Characters should echo back
-
-### Terminal Test
-
-On computer, connect to ESP32's USB-CDC port:
-```bash
-# Linux
-screen /dev/ttyACM0 9600
-
-# macOS
-screen /dev/cu.usbmodem* 9600
 ```
-
-Type characters → seen in web console
-
-## Serial Monitor Commands
-
-The firmware outputs debug info:
+USBSerial-ESP32/
+├── src/
+│   ├── main.cpp        # Main firmware
+│   ├── config.h        # Config structure
+│   └── config.cpp      # Config persistence
+├── test/
+│   ├── simulator.js    # Node.js simulator
+│   └── package.json
+├── platformio.ini      # Build config
+└── README.md
 ```
-====================================
-ESP32 Serial Console Server
-====================================
-USB CDC Serial initialized
-Starting WiFi AP...
-AP Started:
-  SSID: SerialConsole-A1B2C3
-  Password: serial123
-  IP: 192.168.4.1
-HTTP server started on port 80
-WebSocket server started on port 81
-Ready!
-====================================
-[WS] Client 0 connected
-```
-
-## Expanding This Code
-
-This minimal version is a foundation. To add features:
-
-1. **Add configuration storage** → See original config.h/storage.cpp
-2. **Add STA mode** → See original wifi_manager.cpp
-3. **Add authentication** → See original web_server.cpp
-4. **Add static IP** → Extend WiFi configuration
 
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Web interface |
-| `/api/status` | GET | JSON status |
-| `/api/baud?rate=115200` | POST | Change baud rate |
+| `/api/login` | POST | Authenticate |
+| `/api/config` | GET | Get all config |
+| `/api/status` | GET | Device status |
+| `/api/network` | POST | Save WiFi config |
+| `/api/serial` | POST | Save serial config |
+| `/api/device` | POST | Save device config |
+| `/api/scan` | GET | Scan WiFi networks |
+| `/api/baud` | POST | Change baud rate |
+| `/api/reset` | POST | Factory reset |
 
-## WebSocket
+## Default Settings
 
-- **Port**: 81
-- **URL**: `ws://192.168.4.1:81/`
-- **Binary data**: Bidirectional
+| Setting | Value |
+|---------|-------|
+| SSID | SerialConsole-XXXXXX |
+| Password | serial123 |
+| Username | admin |
+| Password | admin |
+| IP (AP mode) | 192.168.4.1 |
+| Baud Rate | 9600 |
 
-## Known Limitations
+## Troubleshooting
 
-1. No authentication (anyone on WiFi can connect)
-2. No configuration persistence (settings reset on reboot)
-3. AP mode only (doesn't connect to existing WiFi)
-4. Fixed 4 max WebSocket clients
-
-## Testing Without Hardware (Simulator)
-
-A Node.js simulator is included to test the web interface without actual hardware.
-
-### Run the Simulator
-
+### Can't Compile
 ```bash
-# Install dependencies (first time only)
-cd test
-npm install
-
-# Run simulator (default ports 3000/3001)
-node simulator.js 3000 3001
-
-# Output:
-# ============================================================
-# ESP32 Serial Console Server - SIMULATOR
-# ============================================================
-# HTTP server started on port 3000
-# WebSocket server started on port 3001
-# 
-# Access from:
-#   Local:   http://localhost:3000
-#   Network: http://192.168.1.100:3000
-# ============================================================
+# Install dependencies
+pio lib install "ArduinoJson" "WebSockets"
 ```
 
-### Access from Other Devices
+### No WiFi Network
+- Wait 30 seconds after power on
+- Check LED is blinking
+- Try factory reset (hold GPIO0 button 10 sec)
 
-The simulator listens on **all network interfaces** (`0.0.0.0`), so you can:
+### Can't Login
+- Defaults: admin/admin
+- Factory reset if forgotten
 
-1. **From this machine**: Open `http://localhost:3000`
-2. **From another device on same network**: Open `http://<your-ip>:3000`
-
-For example, if your IP is `192.168.1.100`, any device on the network can access it at:
-```
-http://192.168.1.100:3000
-```
-
-### Simulated Commands
-
-| Command | Description |
-|---------|-------------|
-| `help` | Show available commands |
-| `show version` | System version info |
-| `show interfaces` | Port status |
-| `show vlan` | VLAN configuration |
-| `show mac` | MAC address table |
-| `show running` | Running config |
-| `ping <ip>` | Simulated ping |
-
-## Version History
-
-- **v1.0** - Minimal working version (this)
-- **v1.1** - Added Node.js simulator for testing
-- **Future** - Add full features from original architecture
-
----
+### Upload Fails
+1. Hold BOOT button
+2. Press RESET button
+3. Release RESET
+4. Release BOOT
+5. Upload starts
 
 ## License
 

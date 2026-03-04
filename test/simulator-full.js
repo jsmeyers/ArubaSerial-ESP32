@@ -1,69 +1,195 @@
+#!/usr/bin/env node
 /**
- * @file main.cpp
- * @brief ESP32 USB-C Serial Console Server - Full Featured Version
+ * ESP32 Serial Console Server - Full Simulator (Node.js)
  * 
- * Features:
- * - WiFi AP/STA/Dual modes
- * - Web configuration interface
- * - Authentication
- * - Static/DHCP IP configuration
- * - Settings persistence (LittleFS)
+ * This simulates the COMPLETE ESP32 interface including:
+ * - User authentication
+ * - WiFi configuration (AP/STA/Dual modes)
+ * - Network scanning
+ * - Device settings
+ * - Serial console
+ * 
+ * Usage:
+ *   node test/simulator-full.js [http_port] [ws_port]
+ *   
+ * Then open: http://localhost:<http_port>
  */
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include <WebServer.h>
-#include <WebSocketsServer.h>
-#include <LittleFS.h>
-#include <ArduinoJson.h>
-#include "config.h"
+const http = require('http');
+const WebSocket = require('ws');
+const crypto = require('crypto');
 
-// ============================================================================
-// Constants
-// ============================================================================
+// Configuration
+const HTTP_PORT = parseInt(process.argv[2]) || 5000;
+const WS_PORT = parseInt(process.argv[3]) || HTTP_PORT + 1;
 
-#define HTTP_PORT       80
-#define WS_PORT         81
-#define SERIAL_BUF_SIZE 4096
+// Get network IPs for display
+const os = require('os');
+function getNetworkIPs() {
+    const interfaces = os.networkInterfaces();
+    const addresses = [];
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                addresses.push(iface.address);
+            }
+        }
+    }
+    return addresses;
+}
 
-// ============================================================================
-// Global Variables
-// ============================================================================
+// Simulated device state
+const deviceState = {
+    deviceName: 'SerialConsole-A1B2C3',
+    apSsid: 'SerialConsole-A1B2C3',
+    apPassword: 'serial123',
+    staSsid: '',
+    staPassword: '',
+    useStaticIp: false,
+    staticIp: '192.168.1.100',
+    gateway: '192.168.1.1',
+    subnet: '255.255.255.0',
+    dns1: '8.8.8.8',
+    dns2: '8.8.4.4',
+    wifiMode: 0, // 0=AP, 1=STA, 2=Dual
+    staEnabled: false,
+    baudRate: 9600,
+    dataBits: 8,
+    stopBits: 1,
+    parity: 'N',
+    authEnabled: true,
+    webUsername: 'admin',
+    webPassword: 'admin'
+};
 
-WebServer server(HTTP_PORT);
-WebSocketsServer webSocket(WS_PORT);
+// Simulated Aruba commands
+const ARUBA_COMMANDS = {
+    'help': `
+Available commands:
+  show version     - Show system version
+  show interfaces  - Show interface status
+  show vlan        - Show VLAN information
+  show mac         - Show MAC address table
+  show running     - Show running configuration
+  ping <ip>        - Ping an IP address
+  clear            - Clear screen
+  exit             - Exit session
+`,
+    'show version': `
+ArubaOS Version: 8.10.0.0
+Build: 90732
+Model: Aruba CX 6200F
+Serial: AR01A2B3C4D5
+MAC Address: 00:11:22:33:44:55
+Uptime: 1 day, 2 hours, 30 minutes
+CPU: 15%
+Memory: 45% used
+`,
+    'show interfaces': `
+Interface    Status    Protocol    Description
+----------    ------    --------    -----------
+1/1/1        up        up          Uplink-Core
+1/1/2        up        up          AP-Floor1
+1/1/3        down      down        Reserved
+1/1/4        up        up          Server-Farm
+1/1/5        up        up          User-VLAN
+1/1/6        down      down        Not Connected
+`,
+    'show vlan': `
+VLAN  Name                      Status    Ports  
+----  ----                      ------    -----  
+1     Default                   active    1/1/6  
+10    Management                active    1/1/1  
+20    Users                     active    1/1/2,1/1/5
+30    Servers                   active    1/1/4  
+100   Guest                     active    1/1/3  
+`,
+    'show mac': `
+MAC Address       VLAN  Port          Type
+----------------- ----  -----------   ------
+00:11:22:33:44:55 10    1/1/1         Static
+AA:BB:CC:DD:EE:FF 20    1/1/2         Dynamic
+11:22:33:44:55:66 20    1/1/5         Dynamic
+22:33:44:55:66:77 30    1/1/4         Dynamic
+`,
+    'show running': `
+! Aruba CX Configuration
+!
+hostname Aruba-CX-Switch
+!
+vlan 1
+   name "Default"
+!
+vlan 10
+   name "Management"
+!
+vlan 20
+   name "Users"
+!
+vlan 30
+   name "Servers"
+!
+interface 1/1/1
+   description "Uplink-Core"
+   no shutdown
+!
+interface 1/1/2
+   description "AP-Floor1"
+   no shutdown
+!
+spanning-tree mode mstp
+!
+`
+};
 
-uint8_t serialBuffer[SERIAL_BUF_SIZE];
-size_t serialBufferIdx = 0;
-uint32_t bytesReceived = 0;
-uint32_t bytesSent = 0;
-unsigned long lastFlush = 0;
-String sessionToken;
+// Simulated networks for scanning
+const SIMULATED_NETWORKS = [
+    { ssid: 'HomeNetwork', rssi: -45, encryption: true, channel: 6 },
+    { ssid: 'Office_Guest', rssi: -60, encryption: true, channel: 11 },
+    { ssid: 'CoffeeShop', rssi: -75, encryption: false, channel: 1 },
+    { ssid: 'Neighbor_5G', rssi: -82, encryption: true, channel: 36 },
+    { ssid: 'ApartmentWiFi', rssi: -55, encryption: true, channel: 6 }
+];
 
-// Network IPs for display
-String apIP = "";
-String staIP = "";
+// Session storage
+const sessions = new Map();
+const wsClients = new Set();
 
-// ============================================================================
-// Forward Declarations
-// ============================================================================
+// Helper functions
+function getTimestamp() {
+    return new Date().toTimeString().split(' ')[0];
+}
 
-bool isAuthenticated();
-void setupAP();
-void setupSTA();
-void setupDualMode();
+function generateToken() {
+    return crypto.randomBytes(16).toString('hex');
+}
 
-// ============================================================================
-// HTML Pages
-// ============================================================================
+function isValidToken(token) {
+    return sessions.has(token);
+}
 
-const char INDEX_HTML[] PROGMEM = R"rawliteral(
+function simulatePing(ip) {
+    return `
+PING ${ip}: 64 bytes
+Reply from ${ip}: bytes=64 time<1ms TTL=64
+Reply from ${ip}: bytes=64 time<1ms TTL=64
+Reply from ${ip}: bytes=64 time<1ms TTL=64
+Reply from ${ip}: bytes=64 time<1ms TTL=64
+
+--- ${ip} ping statistics ---
+4 packets transmitted, 4 packets received, 0% packet loss
+round-trip min/avg/max = 0/0/1 ms
+`;
+}
+
+// Web interface HTML (matches the ESP32 firmware exactly)
+const INDEX_HTML = `
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Serial Console</title>
+    <title>Serial Console Simulator</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background: #1a1a2e; color: #eee; }
@@ -71,6 +197,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         
         .header { background: linear-gradient(135deg, #667eea, #764ba2); padding: 20px; border-radius: 12px; margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
         .header h1 { font-size: 24px; }
+        .sim-badge { background: #f39c12; color: #000; padding: 5px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; }
         .header-actions { display: flex; gap: 10px; }
         .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
         .btn:hover { transform: translateY(-1px); }
@@ -112,6 +239,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         .modal-content { background: #16213e; padding: 30px; border-radius: 12px; max-width: 400px; width: 90%; }
         .modal-content h2 { margin-bottom: 20px; }
         
+        .network-list { max-height: 200px; overflow-y: auto; margin-top: 10px; border: 1px solid #333; border-radius: 4px; }
+        .network-item { padding: 10px; border-bottom: 1px solid #333; cursor: pointer; }
+        .network-item:hover { background: #0f3460; }
+        .network-item:last-child { border-bottom: none; }
+        .network-ssid { font-weight: bold; }
+        .network-details { font-size: 12px; color: #888; }
+        
         @media (max-width: 768px) {
             .header { flex-direction: column; text-align: center; }
             .status-bar { flex-direction: column; }
@@ -123,6 +257,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <div id="authModal" class="modal active">
         <div class="modal-content">
             <h2>🔐 Login Required</h2>
+            <p style="margin-bottom:15px;color:#888">This is a SIMULATOR. Defaults shown.</p>
             <form id="authForm">
                 <div class="form-group">
                     <label>Username:</label>
@@ -130,7 +265,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 </div>
                 <div class="form-group">
                     <label>Password:</label>
-                    <input type="password" id="password" required>
+                    <input type="password" id="password" value="admin" required>
                 </div>
                 <button type="submit" class="btn btn-primary" style="width:100%">Login</button>
             </form>
@@ -144,6 +279,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <div>
                 <h1>🔌 Serial Console</h1>
                 <small id="deviceName" style="opacity:0.7">Loading...</small>
+                <span class="sim-badge">SIMULATOR</span>
             </div>
             <div class="header-actions">
                 <button class="btn btn-secondary" onclick="showSettings()">⚙️ Settings</button>
@@ -153,7 +289,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
         <!-- Status Bar -->
         <div class="status-bar">
-            <div class="status-item"><span class="status-label">Serial</span><span id="serialStatus" class="status-value status-bad">Disconnected</span></div>
+            <div class="status-item"><span class="status-label">Serial</span><span id="serialStatus" class="status-value status-good">Connected</span></div>
             <div class="status-item"><span class="status-label">WebSocket</span><span id="wsStatus" class="status-value status-bad">Disconnected</span></div>
             <div class="status-item"><span class="status-label">WiFi Mode</span><span id="wifiMode" class="status-value">-</span></div>
             <div class="status-item"><span class="status-label">IP Address</span><span id="ipAddress" class="status-value">-</span></div>
@@ -171,12 +307,28 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <!-- Terminal Tab -->
         <div id="terminalTab" class="panel">
             <div class="terminal-controls">
-                <label>Baud: <select id="baudRate"><option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option><option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option><option value="57600">57600</option><option value="115200">115200</option></select></label>
+                <label>Baud: 
+                    <select id="baudRate">
+                        <option value="1200">1200</option>
+                        <option value="2400">2400</option>
+                        <option value="4800">4800</option>
+                        <option value="9600" selected>9600</option>
+                        <option value="19200">19200</option>
+                        <option value="38400">38400</option>
+                        <option value="57600">57600</option>
+                        <option value="115200">115200</option>
+                    </select>
+                </label>
                 <button class="btn btn-sm btn-primary" onclick="applyBaud()">Apply</button>
                 <button class="btn btn-sm btn-secondary" onclick="clearTerminal()">Clear</button>
                 <button class="btn btn-sm btn-primary" id="wsBtn" onclick="toggleWebSocket()">Connect</button>
             </div>
-            <div class="terminal" id="terminal"><pre id="output"></pre></div>
+            <div class="terminal" id="terminal"><pre id="output">ArubaOS (CN) Version 8.10.0.0
+Copyright (c) Aruba Networks, Inc.
+
+Type 'help' for commands.
+
+# </pre></div>
             <div class="terminal-input">
                 <input type="text" id="terminalInput" placeholder="Enter command..." disabled>
                 <button class="btn btn-primary" id="sendBtn" onclick="sendData()" disabled>Send</button>
@@ -186,11 +338,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         <!-- Network Tab -->
         <div id="networkTab" class="panel" style="display:none">
             <h3>WiFi Configuration</h3>
+            <p style="margin-bottom:15px;color:#888">This is SIMULATED. Changes show UI behavior only.</p>
             <div class="settings-grid">
                 <div>
                     <div class="form-group">
                         <label>WiFi Mode:</label>
-                        <select id="wifiModeSelect">
+                        <select id="wifiModeSelect" onchange="updateWifiMode()">
                             <option value="0">Access Point (AP)</option>
                             <option value="1">Station (STA)</option>
                             <option value="2">AP + Station (Dual)</option>
@@ -213,12 +366,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                         <input type="text" id="staSsid">
                         <button class="btn btn-sm btn-secondary" onclick="scanNetworks()" style="margin-top:5px">🔍 Scan</button>
                     </div>
+                    <div id="networkScan" class="network-list" style="display:none"></div>
                     <div class="form-group">
                         <label>Password:</label>
                         <input type="password" id="staPassword">
                     </div>
                     <div class="form-group">
-                        <label class="checkbox-label"><input type="checkbox" id="useStaticIp" onchange="toggleStaticIp()"> Use Static IP</label>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="useStaticIp" onchange="toggleStaticIp()">
+                            Use Static IP
+                        </label>
                     </div>
                     <div id="staticIpFields" style="display:none">
                         <div class="form-group"><label>IP:</label><input type="text" id="staticIp" placeholder="192.168.1.100"></div>
@@ -229,8 +386,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                     </div>
                 </div>
             </div>
-            <div id="networkScan" style="margin-top:15px;max-height:200px;overflow-y:auto;display:none"></div>
-            <div style="margin-top:15px"><button class="btn btn-primary" onclick="saveNetwork()">Save & Restart</button></div>
+            <div style="margin-top:15px"><button class="btn btn-primary" onclick="saveNetwork()">Save & Restart (Simulated)</button></div>
         </div>
 
         <!-- Serial Tab -->
@@ -246,7 +402,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                     <div class="form-group"><label>Stop Bits:</label><select id="stopBits"><option value="1" selected>1</option><option value="2">2</option></select></div>
                 </div>
             </div>
-            <div style="margin-top:15px"><button class="btn btn-primary" onclick="saveSerial()">Save</button></div>
+            <div style="margin-top:15px"><button class="btn btn-primary" onclick="saveSerial()">Save (Simulated)</button></div>
         </div>
 
         <!-- Settings Modal -->
@@ -271,13 +427,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     <script>
         let ws = null;
         let connected = false;
-        let token = localStorage.getItem('token') || '';
-        const wsPort = 81;
+        let token = localStorage.getItem('simToken') || '';
+        const wsPort = WS_PORT;
+        let txBytes = 0, rxBytes = 0;
 
+        // Init
         document.addEventListener('DOMContentLoaded', () => {
             if (token) checkAuth();
         });
 
+        // Auth
         document.getElementById('authForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const user = document.getElementById('username').value;
@@ -291,7 +450,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 const data = await res.json();
                 if (data.success) {
                     token = data.token;
-                    localStorage.setItem('token', token);
+                    localStorage.setItem('simToken', token);
                     document.getElementById('authModal').classList.remove('active');
                     document.getElementById('app').style.display = 'block';
                     loadConfig();
@@ -307,7 +466,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         async function checkAuth() {
             try {
                 const res = await fetch('/api/config', {headers: {'Authorization': token}});
-                if (res.status === 401) { localStorage.removeItem('token'); token = ''; return; }
+                if (res.status === 401) { localStorage.removeItem('simToken'); token = ''; return; }
                 const data = await res.json();
                 applyConfig(data);
                 document.getElementById('authModal').classList.remove('active');
@@ -321,11 +480,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             }
         }
 
-        function logout() { localStorage.removeItem('token'); token = ''; location.reload(); }
+        function logout() { localStorage.removeItem('simToken'); token = ''; location.reload(); }
 
+        // WebSocket
         function connectWebSocket() {
             if (ws) ws.close();
-            const wsUrl = `ws://${window.location.hostname}:${wsPort}?token=${token}`;
+            const wsUrl = 'ws://' + window.location.hostname + ':' + wsPort + '/?token=' + token;
             ws = new WebSocket(wsUrl);
             ws.onopen = () => {
                 connected = true;
@@ -335,10 +495,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('sendBtn').disabled = false;
                 document.getElementById('wsBtn').textContent = 'Disconnect';
                 document.getElementById('wsBtn').className = 'btn btn-sm btn-danger';
-                appendOutput('[WebSocket connected]\\n');
+                appendOutput('[WebSocket connected - Simulator]\\n# ');
             };
             ws.onmessage = (e) => {
-                const text = e.data instanceof ArrayBuffer ? new TextDecoder().decode(e.data) : e.data;
+                const text = e.data;
                 appendOutput(text);
             };
             ws.onclose = () => {
@@ -350,7 +510,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('wsBtn').textContent = 'Connect';
                 document.getElementById('wsBtn').className = 'btn btn-sm btn-primary';
             };
-            ws.onerror = () => appendOutput('[WebSocket error]\\n');
         }
 
         function toggleWebSocket() { if (connected) { ws.close(); } else { connectWebSocket(); } }
@@ -363,6 +522,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             if (ws && connected) {
                 ws.send(cmd);
                 appendOutput(cmd + '\\n');
+                txBytes += cmd.length;
+                document.getElementById('traffic').textContent = txBytes + ' / ' + rxBytes;
                 input.value = '';
             }
         }
@@ -370,10 +531,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         function appendOutput(text) {
             const output = document.getElementById('output');
             output.textContent += text;
+            rxBytes += text.length;
+            document.getElementById('traffic').textContent = txBytes + ' / ' + rxBytes;
             document.getElementById('terminal').scrollTop = document.getElementById('terminal').scrollHeight;
         }
 
-        function clearTerminal() { document.getElementById('output').textContent = ''; }
+        function clearTerminal() { document.getElementById('output').textContent = '# '; txBytes = 0; rxBytes = 0; document.getElementById('traffic').textContent = '0 / 0'; }
 
         async function applyBaud() {
             const baud = document.getElementById('baudRate').value;
@@ -382,13 +545,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 headers: {'Content-Type': 'application/json', 'Authorization': token},
                 body: JSON.stringify({baudRate: parseInt(baud)})
             });
-            appendOutput(`[Baud rate set to ${baud}]\\n`);
+            appendOutput('[Baud rate set to ' + baud + ']\\n');
         }
 
         function showTab(name) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.panel').forEach(p => p.style.display = 'none');
-            document.querySelector(`.tab[onclick="showTab('${name}')"]`).classList.add('active');
+            document.querySelector('.tab[onclick="showTab(\\''+name+'\\')"]').classList.add('active');
             document.getElementById(name + 'Tab').style.display = 'block';
         }
 
@@ -403,28 +566,34 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         function applyConfig(data) {
             document.getElementById('deviceName').textContent = data.deviceName || 'SerialConsole';
             document.getElementById('wifiMode').textContent = ['AP', 'STA', 'AP+STA'][data.wifiMode || 0];
-            document.getElementById('ipAddress').textContent = data.ip || '-';
+            document.getElementById('ipAddress').textContent = data.ip || '192.168.4.1';
             document.getElementById('wifiModeSelect').value = data.wifiMode || 0;
-            document.getElementById('apSsid').value = data.apSsid || '';
+            document.getElementById('apSsid').value = data.apSsid || 'SerialConsole';
+            document.getElementById('apPassword').value = '';
             document.getElementById('staSsid').value = data.staSsid || '';
+            document.getElementById('staPassword').value = '';
             document.getElementById('useStaticIp').checked = data.useStaticIp || false;
             toggleStaticIp();
-            document.getElementById('staticIp').value = data.staticIp || '';
-            document.getElementById('gateway').value = data.gateway || '';
-            document.getElementById('subnet').value = data.subnet || '';
-            document.getElementById('dns1').value = data.dns1 || '';
-            document.getElementById('dns2').value = data.dns2 || '';
+            document.getElementById('staticIp').value = data.staticIp || '192.168.1.100';
+            document.getElementById('gateway').value = data.gateway || '192.168.1.1';
+            document.getElementById('subnet').value = data.subnet || '255.255.255.0';
+            document.getElementById('dns1').value = data.dns1 || '8.8.8.8';
+            document.getElementById('dns2').value = data.dns2 || '8.8.4.4';
             document.getElementById('serialBaud').value = data.baudRate || 9600;
             document.getElementById('dataBits').value = data.dataBits || 8;
             document.getElementById('parity').value = data.parity || 'N';
             document.getElementById('stopBits').value = data.stopBits || 1;
-            document.getElementById('deviceNameInput').value = data.deviceName || '';
+            document.getElementById('deviceNameInput').value = data.deviceName || 'SerialConsole';
             document.getElementById('authEnabled').checked = data.authEnabled !== false;
             document.getElementById('webUsername').value = data.webUsername || 'admin';
         }
 
         function toggleStaticIp() {
             document.getElementById('staticIpFields').style.display = document.getElementById('useStaticIp').checked ? 'block' : 'none';
+        }
+
+        function updateWifiMode() {
+            // Just update UI
         }
 
         async function scanNetworks() {
@@ -436,7 +605,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 const networks = await res.json();
                 div.innerHTML = '<strong>Available Networks:</strong><br>';
                 networks.forEach(n => {
-                    div.innerHTML += `<div style="padding:5px;cursor:pointer" onclick="selectNetwork('${n.ssid}')">${n.ssid} (${n.rssi} dBm) ${n.encryption?'🔒':''}</div>`;
+                    const signal = n.rssi > -50 ? '🟢 Excellent' : n.rssi > -60 ? '🟡 Good' : '🔴 Weak';
+                    div.innerHTML += '<div class="network-item" onclick="selectNetwork(\\''+n.ssid+'\\')"><span class="network-ssid">'+n.ssid+'</span> <span class="network-details">'+signal+' ('+n.rssi+' dBm) '+(n.encryption?'🔒':'📶')+'</span></div>';
                 });
             } catch (err) { div.innerHTML = 'Scan failed'; }
         }
@@ -469,55 +639,29 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                     body: JSON.stringify(data)
                 });
                 const result = await res.json();
-                if (result.success) alert('Settings saved. Device will restart.');
-                else alert('Error: ' + (result.error || 'Unknown'));
-            } catch (err) { alert('Failed to save settings'); }
+                if (result.success) {
+                    alert('SIMULATOR: Settings would be saved on real device.\\nMode: ' + ['AP', 'STA', 'AP+STA'][data.wifiMode]);
+                } else {
+                    alert('Error: ' + (result.error || 'Unknown'));
+                }
+            } catch (err) { alert('Failed'); }
         }
 
         async function saveSerial() {
-            const data = {
-                baudRate: parseInt(document.getElementById('serialBaud').value),
-                dataBits: parseInt(document.getElementById('dataBits').value),
-                parity: document.getElementById('parity').value,
-                stopBits: parseInt(document.getElementById('stopBits').value)
-            };
-            try {
-                await fetch('/api/serial', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json', 'Authorization': token},
-                    body: JSON.stringify(data)
-                });
-                alert('Serial settings saved');
-            } catch (err) { alert('Failed to save serial settings'); }
+            alert('SIMULATOR: Serial settings would be saved on real device.');
         }
 
         function showSettings() { document.getElementById('settingsModal').classList.add('active'); }
         function hideSettings() { document.getElementById('settingsModal').classList.remove('active'); }
 
         async function saveDevice() {
-            const data = {
-                deviceName: document.getElementById('deviceNameInput').value,
-                authEnabled: document.getElementById('authEnabled').checked,
-                webUsername: document.getElementById('webUsername').value
-            };
-            const pass = document.getElementById('webPassword').value;
-            if (pass) data.webPassword = pass;
-            try {
-                await fetch('/api/device', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json', 'Authorization': token},
-                    body: JSON.stringify(data)
-                });
-                hideSettings();
-                loadConfig();
-            } catch (err) { alert('Failed to save device settings'); }
+            alert('SIMULATOR: Device settings would be saved on real device.');
+            hideSettings();
         }
 
         async function factoryReset() {
-            if (confirm('Reset all settings to defaults? This cannot be undone.')) {
-                await fetch('/api/reset', {method: 'POST', headers: {'Authorization': token}});
-                alert('Device will restart with default settings');
-                localStorage.removeItem('token');
+            if (confirm('Reset all settings? This SIMULATOR will just reload.')) {
+                location.reload();
             }
         }
 
@@ -528,467 +672,205 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 document.getElementById('serialStatus').textContent = data.serial ? 'Connected' : 'Disconnected';
                 document.getElementById('serialStatus').className = 'status-value ' + (data.serial ? 'status-good' : 'status-bad');
                 document.getElementById('clients').textContent = data.clients || 0;
-                document.getElementById('traffic').textContent = `${data.tx || 0} / ${data.rx || 0}`;
             } catch (err) {}
         }, 2000);
     </script>
 </body>
 </html>
-)rawliteral";
+`.replace(/WS_PORT/g, WS_PORT);
 
-// ============================================================================
-// Handler Functions
-// ============================================================================
-
-void handleRoot() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "text/plain", "Unauthorized");
-        return;
-    }
-    server.send(200, "text/html", INDEX_HTML);
-}
-
-void handleStatus() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+// HTTP Server
+const httpServer = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    
+    // CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    if (req.method === 'OPTIONS') {
+        res.writeHead(200);
+        res.end();
         return;
     }
     
-    JsonDocument doc;
-    doc["serial"] = true;
-    doc["clients"] = webSocket.connectedClients();
-    doc["tx"] = bytesSent;
-    doc["rx"] = bytesReceived;
-    doc["wifiMode"] = config.wifiMode;
-    doc["ip"] = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) ? apIP : staIP;
-    
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
-}
-
-void handleLogin() {
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    
-    if (error) {
-        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-        return;
+    // Routes
+    if (url.pathname === '/') {
+        res.writeHead(200, {'Content-Type': 'text/html'});
+        res.end(INDEX_HTML);
     }
-    
-    String username = doc["username"];
-    String password = doc["password"];
-    
-    if (username == config.webUsername && password == config.webPassword) {
-        sessionToken = String(esp_random(), HEX);
-        String response = "{\"success\":true,\"token\":\"" + sessionToken + "\"}";
-        server.send(200, "application/json", response);
-    } else {
-        server.send(401, "application/json", "{\"error\":\"Invalid credentials\"}");
-    }
-}
-
-bool isAuthenticated() {
-    if (!config.authEnabled) return true;
-    String authHeader = server.header("Authorization");
-    return (authHeader.length() > 0 && authHeader == sessionToken);
-}
-
-void handleConfig() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    JsonDocument doc;
-    doc["deviceName"] = config.deviceName;
-    doc["wifiMode"] = config.wifiMode;
-    doc["apSsid"] = config.apSsid;
-    doc["staSsid"] = config.staSsid;
-    doc["staEnabled"] = config.staEnabled;
-    doc["useStaticIp"] = config.useStaticIp;
-    doc["staticIp"] = config.staticIp;
-    doc["gateway"] = config.gateway;
-    doc["subnet"] = config.subnet;
-    doc["dns1"] = config.dns1;
-    doc["dns2"] = config.dns2;
-    doc["baudRate"] = config.baudRate;
-    doc["dataBits"] = config.dataBits;
-    doc["parity"] = String(config.parity);
-    doc["stopBits"] = config.stopBits;
-    doc["authEnabled"] = config.authEnabled;
-    doc["webUsername"] = config.webUsername;
-    doc["ip"] = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA) ? apIP : staIP;
-    
-    String response;
-    serializeJson(doc, response);
-    server.send(200, "application/json", response);
-}
-
-void handleNetwork() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    
-    if (error) {
-        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-        return;
-    }
-    
-    if (doc["wifiMode"]) config.wifiMode = doc["wifiMode"];
-    if (doc["apSsid"]) strlcpy(config.apSsid, doc["apSsid"], sizeof(config.apSsid));
-    if (doc["apPassword"]) strlcpy(config.apPassword, doc["apPassword"], sizeof(config.apPassword));
-    if (doc["staSsid"]) strlcpy(config.staSsid, doc["staSsid"], sizeof(config.staSsid));
-    if (doc["staPassword"]) strlcpy(config.staPassword, doc["staPassword"], sizeof(config.staPassword));
-    config.useStaticIp = doc["useStaticIp"] | false;
-    if (doc["staticIp"]) strlcpy(config.staticIp, doc["staticIp"], sizeof(config.staticIp));
-    if (doc["gateway"]) strlcpy(config.gateway, doc["gateway"], sizeof(config.gateway));
-    if (doc["subnet"]) strlcpy(config.subnet, doc["subnet"], sizeof(config.subnet));
-    if (doc["dns1"]) strlcpy(config.dns1, doc["dns1"], sizeof(config.dns1));
-    if (doc["dns2"]) strlcpy(config.dns2, doc["dns2"], sizeof(config.dns2));
-    
-    saveConfig();
-    server.send(200, "application/json", "{\"success\":true,\"message\":\"Restarting...\"}");
-    delay(1000);
-    ESP.restart();
-}
-
-void handleSerial() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    
-    if (error) {
-        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-        return;
-    }
-    
-    if (doc["baudRate"]) config.baudRate = doc["baudRate"];
-    if (doc["dataBits"]) config.dataBits = doc["dataBits"];
-    if (doc["stopBits"]) config.stopBits = doc["stopBits"];
-    if (doc["parity"]) config.parity = doc["parity"].as<const char*>()[0];
-    
-    saveConfig();
-    SerialUSB.updateBaudRate(config.baudRate);
-    
-    server.send(200, "application/json", "{\"success\":true}");
-}
-
-void handleDevice() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    
-    if (error) {
-        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-        return;
-    }
-    
-    if (doc["deviceName"]) strlcpy(config.deviceName, doc["deviceName"], sizeof(config.deviceName));
-    if (doc["authEnabled"]) config.authEnabled = doc["authEnabled"];
-    if (doc["webUsername"]) strlcpy(config.webUsername, doc["webUsername"], sizeof(config.webUsername));
-    if (doc["webPassword"]) strlcpy(config.webPassword, doc["webPassword"], sizeof(config.webPassword));
-    
-    saveConfig();
-    server.send(200, "application/json", "{\"success\":true}");
-}
-
-void handleScan() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    int n = WiFi.scanNetworks();
-    JsonDocument doc;
-    JsonArray networks = doc.to<JsonArray>();
-    
-    for (int i = 0; i < n; i++) {
-        JsonObject net = networks.createNestedObject();
-        net["ssid"] = WiFi.SSID(i);
-        net["rssi"] = WiFi.RSSI(i);
-        net["encryption"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-    }
-    
-    String response;
-    serializeJson(networks, response);
-    server.send(200, "application/json", response);
-}
-
-void handleBaud() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
-    
-    if (!error && doc["baudRate"]) {
-        config.baudRate = doc["baudRate"];
-        saveConfig();
-        SerialUSB.updateBaudRate(config.baudRate);
-    }
-    
-    server.send(200, "application/json", "{\"success\":true}");
-}
-
-void handleReset() {
-    if (config.authEnabled && !isAuthenticated()) {
-        server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
-        return;
-    }
-    
-    resetConfig();
-    server.send(200, "application/json", "{\"success\":true}");
-    delay(1000);
-    ESP.restart();
-}
-
-// ============================================================================
-// WebSocket Handler
-// ============================================================================
-
-void wsEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
-    switch(type) {
-        case WStype_DISCONNECTED:
-            Serial.printf("[WS] Client %u disconnected\n", num);
-            break;
-        case WStype_CONNECTED:
-            Serial.printf("[WS] Client %u connected\n", num);
-            break;
-        case WStype_TEXT:
-        case WStype_BIN:
-            if (SerialUSB) {
-                size_t written = SerialUSB.write(payload, length);
-                SerialUSB.flush();
-                bytesSent += written;
+    else if (url.pathname === '/api/login' && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const {username, password} = JSON.parse(body);
+                if (username === deviceState.webUsername && password === deviceState.webPassword) {
+                    const token = generateToken();
+                    sessions.set(token, {username, created: Date.now()});
+                    res.writeHead(200, {'Content-Type': 'application/json'});
+                    res.end(JSON.stringify({success: true, token}));
+                } else {
+                    res.writeHead(401, {'Content-Type': 'application/json'});
+                    res.end(JSON.stringify({success: false, error: 'Invalid credentials'}));
+                }
+            } catch (e) {
+                res.writeHead(400, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({error: 'Invalid JSON'}));
             }
-            break;
-        default:
-            break;
+        });
     }
-}
-
-// ============================================================================
-// Serial Bridge
-// ============================================================================
-
-void handleSerialBridge() {
-    if (!SerialUSB) return;
-    
-    int available = SerialUSB.available();
-    if (available > 0) {
-        size_t toRead = min((size_t)available, SERIAL_BUF_SIZE - serialBufferIdx);
-        size_t bytesRead = SerialUSB.readBytes((char*)serialBuffer + serialBufferIdx, toRead);
-        
-        if (bytesRead > 0) {
-            serialBufferIdx += bytesRead;
-            bytesReceived += bytesRead;
+    else if (url.pathname === '/api/config') {
+        if (!isValidToken(req.headers.authorization)) {
+            res.writeHead(401, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({error: 'Unauthorized'}));
+            return;
         }
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({
+            ...deviceState,
+            ip: '192.168.4.1',
+            password: undefined // Don't send password
+        }));
     }
-    
-    if (serialBufferIdx > 0 && millis() - lastFlush > 20) {
-        webSocket.broadcastBIN(serialBuffer, serialBufferIdx);
-        serialBufferIdx = 0;
-        lastFlush = millis();
-    }
-}
-
-// ============================================================================
-// WiFi Setup Functions
-// ============================================================================
-
-void setupAP() {
-    Serial.println("[WIFI] Starting AP mode...");
-    
-    WiFi.mode(WIFI_AP);
-    
-    IPAddress localIp, gateway, subnet;
-    localIp.fromString(DEFAULT_AP_IP);
-    gateway.fromString(DEFAULT_AP_IP);
-    subnet.fromString("255.255.255.0");
-    
-    WiFi.softAPconfig(localIp, gateway, subnet);
-    WiFi.softAP(config.apSsid, config.apPassword, config.apChannel, false, 4);
-    
-    apIP = WiFi.softAPIP().toString();
-    Serial.printf("[WIFI] AP: %s\n", config.apSsid);
-    Serial.printf("[WIFI] Password: %s\n", config.apPassword);
-    Serial.printf("[WIFI] IP: %s\n", apIP.c_str());
-}
-
-void setupSTA() {
-    Serial.println("[WIFI] Starting STA mode...");
-    
-    WiFi.mode(WIFI_STA);
-    WiFi.setHostname(config.deviceName);
-    
-    if (config.useStaticIp) {
-        IPAddress ip, gw, sn, d1, d2;
-        ip.fromString(config.staticIp);
-        gw.fromString(config.gateway);
-        sn.fromString(config.subnet);
-        d1.fromString(config.dns1);
-        d2.fromString(config.dns2);
-        WiFi.config(ip, gw, sn, d1, d2);
-    }
-    
-    WiFi.begin(config.staSsid, config.staPassword);
-    Serial.printf("[WIFI] Connecting to %s...\n", config.staSsid);
-    
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-    
-    if (WiFi.status() == WL_CONNECTED) {
-        staIP = WiFi.localIP().toString();
-        Serial.printf("\n[WIFI] Connected! IP: %s\n", staIP.c_str());
-    } else {
-        Serial.println("\n[WIFI] Failed, falling back to AP");
-        setupAP();
-    }
-}
-
-void setupDualMode() {
-    Serial.println("[WIFI] Starting AP+STA mode...");
-    setupAP();
-    
-    if (strlen(config.staSsid) > 0) {
-        WiFi.mode(WIFI_AP_STA);
-        WiFi.setHostname(config.deviceName);
-        
-        if (config.useStaticIp) {
-            IPAddress ip, gw, sn, d1, d2;
-            ip.fromString(config.staticIp);
-            gw.fromString(config.gateway);
-            sn.fromString(config.subnet);
-            d1.fromString(config.dns1);
-            d2.fromString(config.dns2);
-            WiFi.config(ip, gw, sn, d1, d2);
+    else if (url.pathname === '/api/status') {
+        if (!isValidToken(req.headers.authorization)) {
+            res.writeHead(401, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({error: 'Unauthorized'}));
+            return;
         }
-        
-        WiFi.begin(config.staSsid, config.staPassword);
-        Serial.printf("[WIFI] Connecting STA to %s...\n", config.staSsid);
-        
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-            delay(500);
-            Serial.print(".");
-            attempts++;
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({
+            serial: true,
+            clients: wsClients.size,
+            tx: txBytes,
+            rx: rxBytes
+        }));
+    }
+    else if (url.pathname === '/api/scan') {
+        if (!isValidToken(req.headers.authorization)) {
+            res.writeHead(401, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({error: 'Unauthorized'}));
+            return;
         }
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify(SIMULATED_NETWORKS));
+    }
+    else if (url.pathname === '/api/network' && req.method === 'POST') {
+        if (!isValidToken(req.headers.authorization)) {
+            res.writeHead(401, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({error: 'Unauthorized'}));
+            return;
+        }
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                Object.assign(deviceState, data);
+                console.log(`[${getTimestamp()}] Network settings updated: Mode=${['AP', 'STA', 'AP+STA'][data.wifiMode]}`);
+                res.writeHead(200, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({success: true, message: 'Settings saved (simulated)'}));
+            } catch (e) {
+                res.writeHead(400, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({error: 'Invalid JSON'}));
+            }
+        });
+    }
+    else if (url.pathname === '/api/baud' && req.method === 'POST') {
+        if (!isValidToken(req.headers.authorization)) {
+            res.writeHead(401, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({error: 'Unauthorized'}));
+            return;
+        }
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({success: true}));
+    }
+    else {
+        res.writeHead(404, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({error: 'Not found'}));
+    }
+});
+
+// WebSocket Server
+const wsServer = new WebSocket.Server({host: '0.0.0.0', port: WS_PORT});
+
+let txBytes = 0;
+let rxBytes = 0;
+
+wsServer.on('connection', (ws, req) => {
+    // Check auth
+    const url = new URL(req.url, `http://localhost`);
+    const token = url.searchParams.get('token');
+    
+    if (!isValidToken(token)) {
+        ws.close();
+        return;
+    }
+    
+    wsClients.add(ws);
+    ws.token = token;
+    console.log(`[${getTimestamp()}] WebSocket client connected. Total: ${wsClients.size}`);
+    
+    ws.on('message', (data) => {
+        const command = data.toString().trim().toLowerCase();
+        rxBytes += data.length;
+        console.log(`[${getTimestamp()}] Command: ${command}`);
         
-        if (WiFi.status() == WL_CONNECTED) {
-            staIP = WiFi.localIP().toString();
-            Serial.printf("\n[WIFI] STA IP: %s\n", staIP.c_str());
+        let response;
+        if (command in ARUBA_COMMANDS) {
+            response = ARUBA_COMMANDS[command];
+        } else if (command.startsWith('ping ')) {
+            const parts = command.split(' ');
+            response = parts.length > 1 ? simulatePing(parts[1]) : 'Usage: ping <ip>\n';
+        } else if (command === 'exit') {
+            response = 'Session closed.\n';
+            ws.send(response);
+            ws.close();
+            return;
+        } else if (command === '') {
+            response = '';
         } else {
-            Serial.println("\n[WIFI] STA failed, AP still active");
+            response = `Unknown command: ${command}\nType 'help' for commands.\n`;
         }
-    }
-}
+        
+        txBytes += response.length + 2;
+        ws.send(response + '\n# ');
+    });
+    
+    ws.on('close', () => {
+        wsClients.delete(ws);
+        console.log(`[${getTimestamp()}] WebSocket client disconnected. Total: ${wsClients.size}`);
+    });
+});
 
-void setupWiFi() {
-    Serial.println("[WIFI] Setting up WiFi...");
-    
-    switch(config.wifiMode) {
-        case 1: setupSTA(); break;
-        case 2: setupDualMode(); break;
-        default: setupAP(); break;
-    }
-}
-
-// ============================================================================
-// Setup & Loop
-// ============================================================================
-
-void setup() {
-    Serial.begin(115200);
-    delay(1000);
-    
-    Serial.println("\n========================================");
-    Serial.println("ESP32 USB-C Serial Console Server v2.0");
-    Serial.println("========================================\n");
-    
-    // LED
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LED_OFF);
-    
-    // Init config
-    if (!initConfig()) {
-        Serial.println("[ERROR] Config init failed!");
-        while(1) delay(100);
+// Start servers
+httpServer.listen(HTTP_PORT, '0.0.0.0', (err) => {
+    if (err) {
+        console.error(`Failed to start HTTP server: ${err.message}`);
+        process.exit(1);
     }
     
-    // Init USB CDC
-    SerialUSB.begin(config.baudRate);
-    Serial.println("[USB] CDC Serial initialized");
+    const networkIPs = getNetworkIPs();
     
-    // Setup WiFi
-    setupWiFi();
-    
-    // Web server
-    server.on("/", handleRoot);
-    server.on("/api/status", handleStatus);
-    server.on("/api/login", HTTP_POST, handleLogin);
-    server.on("/api/config", handleConfig);
-    server.on("/api/network", HTTP_POST, handleNetwork);
-    server.on("/api/serial", HTTP_POST, handleSerial);
-    server.on("/api/device", HTTP_POST, handleDevice);
-    server.on("/api/scan", handleScan);
-    server.on("/api/baud", HTTP_POST, handleBaud);
-    server.on("/api/reset", HTTP_POST, handleReset);
-    
-    const char* headers[] = {"Authorization"};
-    server.collectHeaders(headers, 1);
-    server.enableCORS(true);
-    server.begin();
-    Serial.println("[HTTP] Server started on port 80");
-    
-    // WebSocket
-    webSocket.begin();
-    webSocket.onEvent(wsEvent);
-    Serial.println("[WS] WebSocket started on port 81");
-    
-    // Ready blink
-    for (int i = 0; i < 3; i++) {
-        digitalWrite(LED_PIN, LED_ON);
-        delay(100);
-        digitalWrite(LED_PIN, LED_OFF);
-        delay(100);
-    }
-    
-    Serial.println("\n[READY] System ready!");
-    Serial.printf("[INFO] Connect to: %s\n", config.apSsid);
-    Serial.printf("[INFO] Password: %s\n", config.apPassword);
-    Serial.printf("[INFO] IP: %s\n", apIP.length() > 0 ? apIP.c_str() : staIP.c_str());
-}
-
-void loop() {
-    server.handleClient();
-    webSocket.loop();
-    handleSerialBridge();
-    
-    // Status LED
-    static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 500) {
-        lastBlink = millis();
-        digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-    }
-    
-    yield();
-}
+    console.log('='.repeat(60));
+    console.log('ESP32 Serial Console Server - FULL SIMULATOR');
+    console.log('='.repeat(60));
+    console.log(`[${getTimestamp()}] HTTP server started on port ${HTTP_PORT}`);
+    console.log(`[${getTimestamp()}] WebSocket server started on port ${WS_PORT}`);
+    console.log('');
+    console.log('This simulates the COMPLETE ESP32 interface including:');
+    console.log('  - Authentication (admin/admin)');
+    console.log('  - WiFi configuration');
+    console.log('  - Network scanning');
+    console.log('  - Serial console (Aruba commands)');
+    console.log('');
+    console.log('Access from:');
+    console.log(`  Local:   http://localhost:${HTTP_PORT}`);
+    networkIPs.forEach(ip => {
+        console.log(`  Network: http://${ip}:${HTTP_PORT}`);
+    });
+    console.log('');
+    console.log('Default login: admin / admin');
+    console.log('='.repeat(60));
+});
