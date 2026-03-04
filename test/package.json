@@ -1,0 +1,15 @@
+{
+  "name": "aruba-serial-simulator",
+  "version": "1.0.0",
+  "description": "Hardware simulator for ESP32 Serial Console Server",
+  "main": "simulator.js",
+  "scripts": {
+    "start": "node simulator.js 3000 3001",
+    "test": "node simulator.js 3000 3001"
+  },
+  "dependencies": {
+    "ws": "^8.19.0"
+  },
+  "author": "",
+  "license": "MIT"
+}

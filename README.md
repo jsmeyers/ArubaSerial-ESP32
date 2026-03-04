@@ -201,9 +201,53 @@ This minimal version is a foundation. To add features:
 3. AP mode only (doesn't connect to existing WiFi)
 4. Fixed 4 max WebSocket clients
 
+## Testing Without Hardware (Simulator)
+
+A Node.js simulator is included to test the web interface without actual hardware.
+
+### Run the Simulator
+
+```bash
+# Install dependencies (first time only)
+cd test
+npm install
+
+# Run simulator
+node simulator.js
+
+# Output:
+# ============================================================
+# ESP32 Serial Console Server - SIMULATOR
+# ============================================================
+# HTTP server started on port 8080
+# WebSocket server started on port 8081
+# Open http://localhost:8080 in your browser
+# ============================================================
+```
+
+### What the Simulator Does
+
+- Creates a local web server (port 8080)
+- Creates a WebSocket server (port 8081)
+- Simulates Aruba CX switch console responses
+- Responds to commands like `help`, `show version`, `show interfaces`, etc.
+
+### Simulated Commands
+
+| Command | Description |
+|---------|-------------|
+| `help` | Show available commands |
+| `show version` | System version info |
+| `show interfaces` | Port status |
+| `show vlan` | VLAN configuration |
+| `show mac` | MAC address table |
+| `show running` | Running config |
+| `ping <ip>` | Simulated ping |
+
 ## Version History
 
 - **v1.0** - Minimal working version (this)
+- **v1.1** - Added Node.js simulator for testing
 - **Future** - Add full features from original architecture
 
 ---
