@@ -212,25 +212,33 @@ A Node.js simulator is included to test the web interface without actual hardwar
 cd test
 npm install
 
-# Run simulator
-node simulator.js
+# Run simulator (default ports 3000/3001)
+node simulator.js 3000 3001
 
 # Output:
 # ============================================================
 # ESP32 Serial Console Server - SIMULATOR
 # ============================================================
-# HTTP server started on port 8080
-# WebSocket server started on port 8081
-# Open http://localhost:8080 in your browser
+# HTTP server started on port 3000
+# WebSocket server started on port 3001
+# 
+# Access from:
+#   Local:   http://localhost:3000
+#   Network: http://192.168.1.100:3000
 # ============================================================
 ```
 
-### What the Simulator Does
+### Access from Other Devices
 
-- Creates a local web server (port 8080)
-- Creates a WebSocket server (port 8081)
-- Simulates Aruba CX switch console responses
-- Responds to commands like `help`, `show version`, `show interfaces`, etc.
+The simulator listens on **all network interfaces** (`0.0.0.0`), so you can:
+
+1. **From this machine**: Open `http://localhost:3000`
+2. **From another device on same network**: Open `http://<your-ip>:3000`
+
+For example, if your IP is `192.168.1.100`, any device on the network can access it at:
+```
+http://192.168.1.100:3000
+```
 
 ### Simulated Commands
 

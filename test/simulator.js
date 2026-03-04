@@ -19,7 +19,22 @@ const path = require('path');
 
 // Configuration - use command line args or defaults
 const HTTP_PORT = parseInt(process.argv[2]) || 3000;
-const WS_PORT = parseInt(process.argv[3]) || 3001;
+const WS_PORT = parseInt(process.argv[3]) || HTTP_PORT + 1;
+
+// Get all network interfaces for display
+const os = require('os');
+function getNetworkIPs() {
+    const interfaces = os.networkInterfaces();
+    const addresses = [];
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                addresses.push(iface.address);
+            }
+        }
+    }
+    return addresses;
+}
 
 // State
 const connectedClients = new Set();
@@ -214,7 +229,9 @@ Type 'help' for commands.
 
         function connectWebSocket() {
             if (ws) ws.close();
-            const wsUrl = 'ws://' + window.location.hostname + ':81/';
+            // Use the same port as WS_PORT (HTTP port + 1 by default)
+            const wsPort = 81;  // Will be replaced dynamically
+            const wsUrl = 'ws://' + window.location.hostname + ':' + wsPort + '/';
             appendOutput('\\n[Connecting...]\\n');
             ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
@@ -296,8 +313,10 @@ Type 'help' for commands.
 // HTTP Server
 const httpServer = http.createServer((req, res) => {
     if (req.url === '/') {
+        // Inject WebSocket port into HTML dynamically
+        const html = INDEX_HTML.replace(/const wsPort = 81;/g, `const wsPort = ${WS_PORT};`);
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(INDEX_HTML);
+        res.end(html);
     } else if (req.url === '/api/status') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -315,8 +334,11 @@ const httpServer = http.createServer((req, res) => {
     }
 });
 
-// WebSocket Server
-const wsServer = new WebSocket.Server({ port: WS_PORT });
+// WebSocket Server - listen on all interfaces
+const wsServer = new WebSocket.Server({ 
+    host: '0.0.0.0',
+    port: WS_PORT 
+});
 
 wsServer.on('connection', (ws) => {
     connectedClients.add(ws);
@@ -358,20 +380,32 @@ wsServer.on('connection', (ws) => {
     });
 });
 
-// Start servers
-httpServer.listen(HTTP_PORT, (err) => {
+// Start servers - listen on all interfaces (0.0.0.0)
+httpServer.listen(HTTP_PORT, '0.0.0.0', (err) => {
     if (err) {
         console.error(`Failed to start HTTP server on port ${HTTP_PORT}: ${err.message}`);
         console.error('Port is in use. Try: node simulator.js <http_port> <ws_port>');
         console.error('Example: node simulator.js 3000 3001');
         process.exit(1);
     }
+    
+    const networkIPs = getNetworkIPs();
+    
     console.log('='.repeat(60));
     console.log('ESP32 Serial Console Server - SIMULATOR');
     console.log('='.repeat(60));
     console.log(`[${getTimestamp()}] HTTP server started on port ${HTTP_PORT}`);
     console.log(`[${getTimestamp()}] WebSocket server started on port ${WS_PORT}`);
-    console.log(`[${getTimestamp()}] Open http://localhost:${HTTP_PORT} in your browser`);
+    console.log('');
+    console.log('Access from:');
+    console.log(`  Local:   http://localhost:${HTTP_PORT}`);
+    
+    if (networkIPs.length > 0) {
+        networkIPs.forEach(ip => {
+            console.log(`  Network: http://${ip}:${HTTP_PORT}`);
+        });
+    }
+    
     console.log('');
     console.log('This simulates an Aruba CX switch console.');
     console.log('Commands: help, show version, show interfaces, etc.');
