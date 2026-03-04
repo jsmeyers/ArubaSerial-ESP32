@@ -1,0 +1,33 @@
+# Build artifacts
+.pio/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Binary/Hex files
+*.bin
+*.hex
+*.elf
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Environment
+.env
+.env.local
+
+# Secrets
+secrets.h
+credentials.json
